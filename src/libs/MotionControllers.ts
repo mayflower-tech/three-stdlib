@@ -10,10 +10,18 @@ interface GamepadIndices {
   yAxis?: number
 }
 
+type ComponentState = 'default' | 'touched' | 'pressed'
+
+type ComponentProperty = 'button' | 'xAxis' | 'yAxis' | 'state'
+
+type ValueNodeProperty = 'transform' | 'visibility'
+
+type ComponentType = 'trigger' | 'squeeze' | 'touchpad' | 'thumbstick' | 'button'
+
 interface VisualResponseDescription {
-  componentProperty: string
-  states: string[]
-  valueNodeProperty: string
+  componentProperty: ComponentProperty
+  states: ComponentState[]
+  valueNodeProperty: ValueNodeProperty
   valueNodeName: string
   minNodeName?: string
   maxNodeName?: string
@@ -22,7 +30,7 @@ interface VisualResponseDescription {
 type VisualResponses = Record<string, VisualResponseDescription>
 
 interface ComponentDescription {
-  type: string
+  type: ComponentType
   gamepadIndices: GamepadIndices
   rootNodeName: string
   visualResponses: VisualResponses
@@ -58,20 +66,20 @@ const MotionControllerConstants = {
     NONE: 'none',
     LEFT: 'left',
     RIGHT: 'right',
-  }),
+  } as const),
 
   ComponentState: Object.freeze({
     DEFAULT: 'default',
     TOUCHED: 'touched',
     PRESSED: 'pressed',
-  }),
+  } as const),
 
   ComponentProperty: Object.freeze({
     BUTTON: 'button',
     X_AXIS: 'xAxis',
     Y_AXIS: 'yAxis',
     STATE: 'state',
-  }),
+  } as const),
 
   ComponentType: Object.freeze({
     TRIGGER: 'trigger',
@@ -79,7 +87,7 @@ const MotionControllerConstants = {
     TOUCHPAD: 'touchpad',
     THUMBSTICK: 'thumbstick',
     BUTTON: 'button',
-  }),
+  } as const),
 
   ButtonTouchThreshold: 0.05,
 
@@ -88,7 +96,7 @@ const MotionControllerConstants = {
   VisualResponseProperty: Object.freeze({
     TRANSFORM: 'transform',
     VISIBILITY: 'visibility',
-  }),
+  } as const),
 }
 
 /**
@@ -184,8 +192,15 @@ async function fetchProfile(
   return { profile, assetPath }
 }
 
+interface ComponentValues {
+  button: number | undefined
+  state: ComponentState
+  xAxis: number | undefined
+  yAxis: number | undefined
+}
+
 /** @constant {Object} */
-const defaultComponentValues = {
+const defaultComponentValues: ComponentValues = {
   xAxis: 0,
   yAxis: 0,
   button: 0,
@@ -235,10 +250,10 @@ function normalizeAxes(
  */
 class VisualResponse implements VisualResponseDescription {
   value: number | boolean
-  componentProperty: string
-  states: string[]
+  componentProperty: ComponentProperty
+  states: ComponentState[]
   valueNodeName: string
-  valueNodeProperty: string
+  valueNodeProperty: ValueNodeProperty
   minNodeName?: string
   maxNodeName?: string
   valueNode: Object3D | undefined
@@ -268,17 +283,7 @@ class VisualResponse implements VisualResponseDescription {
    * @param {number | undefined} button - The reported value of the component's button
    * @param {string} state - The component's active state
    */
-  updateFromComponent({
-    xAxis,
-    yAxis,
-    button,
-    state,
-  }: {
-    xAxis?: number
-    yAxis?: number
-    button?: number
-    state: string
-  }): void {
+  updateFromComponent({ xAxis, yAxis, button, state }: ComponentValues): void {
     const { normalizedXAxis, normalizedYAxis } = normalizeAxes(xAxis, yAxis)
     switch (this.componentProperty) {
       case MotionControllerConstants.ComponentProperty.X_AXIS:
@@ -305,14 +310,9 @@ class VisualResponse implements VisualResponseDescription {
 
 class Component implements ComponentDescription {
   id: string
-  values: {
-    state: string
-    button: number | undefined
-    xAxis: number | undefined
-    yAxis: number | undefined
-  }
+  values: ComponentValues
 
-  type: string
+  type: ComponentType
   gamepadIndices: GamepadIndices
   rootNodeName: string
   visualResponses: Record<string, VisualResponse>

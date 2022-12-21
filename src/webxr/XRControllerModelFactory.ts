@@ -1,5 +1,5 @@
 import { Mesh, Object3D, SphereGeometry, MeshBasicMaterial } from 'three'
-import type { Texture, Group } from 'three'
+import type { Texture } from 'three'
 // @ts-ignore
 import { GLTFLoader } from '../loaders/GLTFLoader'
 import { fetchProfile, MotionController, MotionControllerConstants } from '../libs/MotionControllers'
@@ -16,14 +16,17 @@ const applyEnvironmentMap = (envMap: Texture, obj: Object3D): void => {
   })
 }
 
-class XRControllerModel extends Object3D {
+export class XRControllerModel extends Object3D {
   envMap: Texture | null
   motionController: MotionController | null
+  scene: Object3D | null
+
   constructor() {
     super()
 
     this.motionController = null
     this.envMap = null
+    this.scene = null
   }
 
   setEnvironmentMap(envMap: Texture): XRControllerModel {
@@ -35,6 +38,28 @@ class XRControllerModel extends Object3D {
     applyEnvironmentMap(this.envMap, this)
 
     return this
+  }
+
+  addScene(scene: Object3D): void {
+    if (!this.motionController) {
+      console.warn('scene tried to add, but no motion controller')
+      return
+    }
+
+    this.scene = scene
+    addAssetSceneToControllerModel(this, scene)
+    this.dispatchEvent({
+      type: 'motionControllerLinkedToScene',
+      data: this.motionController,
+    })
+  }
+
+  addMotionController(motionController: MotionController): void {
+    this.motionController = motionController
+    this.dispatchEvent({
+      type: 'motionControllerCreated',
+      data: motionController,
+    })
   }
 
   /**
@@ -77,6 +102,21 @@ class XRControllerModel extends Object3D {
         }
       })
     })
+  }
+
+  disconnect(): void {
+    this.motionController = null
+    this.dispatchEvent({
+      type: 'motionControllerDestroyed',
+    })
+    if (this.scene) {
+      this.remove(this.scene)
+    }
+    this.scene = null
+  }
+
+  dispose(): void {
+    this.disconnect()
   }
 }
 
@@ -154,9 +194,9 @@ class XRControllerModelFactory {
   gltfLoader: GLTFLoader
   path: string
   private _assetCache: Record<string, { scene: Object3D } | undefined>
-  constructor(gltfLoader: GLTFLoader = null) {
+  constructor(gltfLoader: GLTFLoader = null, path = DEFAULT_PROFILES_PATH) {
     this.gltfLoader = gltfLoader
-    this.path = DEFAULT_PROFILES_PATH
+    this.path = path
     this._assetCache = {}
 
     // If a GLTFLoader wasn't supplied to the constructor create a new one.
@@ -165,77 +205,55 @@ class XRControllerModelFactory {
     }
   }
 
-  createControllerModel(controller: Group): XRControllerModel {
-    const controllerModel = new XRControllerModel()
-    let scene: Object3D | null = null
+  initializeControllerModel(controllerModel: XRControllerModel, event: any): void {
+    const xrInputSource = event.data
 
-    const onConnected = (event: any): void => {
-      const xrInputSource = event.data
+    if (xrInputSource.targetRayMode !== 'tracked-pointer' || !xrInputSource.gamepad) return
 
-      if (xrInputSource.targetRayMode !== 'tracked-pointer' || !xrInputSource.gamepad) return
+    fetchProfile(xrInputSource, this.path, DEFAULT_PROFILE)
+      .then(({ profile, assetPath }) => {
+        if (!assetPath) {
+          throw new Error('no asset path')
+        }
 
-      fetchProfile(xrInputSource, this.path, DEFAULT_PROFILE)
-        .then(({ profile, assetPath }) => {
-          if (!assetPath) {
-            throw new Error('no asset path')
+        const motionController = new MotionController(xrInputSource, profile, assetPath)
+        controllerModel.addMotionController(motionController)
+
+        const assetUrl = motionController.assetUrl
+
+        const cachedAsset = this._assetCache[assetUrl]
+        if (cachedAsset) {
+          const scene = cachedAsset.scene.clone()
+
+          controllerModel.addScene(scene)
+        } else {
+          if (!this.gltfLoader) {
+            throw new Error('GLTFLoader not set.')
           }
 
-          controllerModel.motionController = new MotionController(xrInputSource, profile, assetPath)
+          this.gltfLoader.setPath('')
+          this.gltfLoader.load(
+            assetUrl,
+            (asset: { scene: Object3D }) => {
+              if (!controllerModel.motionController) {
+                console.warn('motionController gone while gltf load, bailing...')
+                return
+              }
 
-          const assetUrl = controllerModel.motionController.assetUrl
-
-          const cachedAsset = this._assetCache[assetUrl]
-          if (cachedAsset) {
-            scene = cachedAsset.scene.clone()
-
-            addAssetSceneToControllerModel(controllerModel, scene)
-          } else {
-            if (!this.gltfLoader) {
-              throw new Error('GLTFLoader not set.')
-            }
-
-            this.gltfLoader.setPath('')
-            this.gltfLoader.load(
-              controllerModel.motionController.assetUrl,
-              (asset: { scene: Object3D }) => {
-                if (!controllerModel.motionController) {
-                  console.warn('motionController gone while gltf load, bailing...')
-                  return
-                }
-
-                this._assetCache[assetUrl] = asset
-
-                scene = asset.scene.clone()
-
-                addAssetSceneToControllerModel(controllerModel, scene)
-              },
-              null,
-              () => {
-                throw new Error(`Asset ${assetUrl} missing or malformed.`)
-              },
-            )
-          }
-        })
-        .catch((err) => {
-          console.warn(err)
-        })
-    }
-
-    controller.addEventListener('connected', onConnected)
-
-    const onDisconnected = (): void => {
-      controller.removeEventListener('connected', onConnected)
-      controller.removeEventListener('disconnected', onDisconnected)
-      controllerModel.motionController = null
-      if (scene) {
-        controllerModel.remove(scene)
-      }
-      scene = null
-    }
-
-    controller.addEventListener('disconnected', onDisconnected)
-
-    return controllerModel
+              this._assetCache[assetUrl] = asset
+              const scene = asset.scene.clone()
+              controllerModel.addScene(scene)
+            },
+            null,
+            () => {
+              throw new Error(`Asset ${assetUrl} missing or malformed.`)
+            },
+          )
+        }
+      })
+      .catch((err) => {
+        console.warn(err)
+      })
   }
 }
 
